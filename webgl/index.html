@@ -10,7 +10,6 @@
     <script src="Build/webgl.loader.js"></script>
     <script>
       if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-        // Mobile device style: fill the whole browser client area with the game canvas:
         var meta = document.createElement('meta');
         meta.name = 'viewport';
         meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
@@ -24,6 +23,7 @@
         document.body.style.textAlign = "left";
       }
 
+      var unityInstance = null;
       createUnityInstance(document.querySelector("#unity-canvas"), {
         arguments: [],
         dataUrl: "Build/webgl.data",
@@ -33,9 +33,119 @@
         companyName: "NaMeta",
         productName: "InteractiveAvatars",
         productVersion: "0.1",
-        // matchWebGLToCanvasSize: false, // Uncomment this to separately control WebGL canvas render size and DOM element size.
-        // devicePixelRatio: 1, // Uncomment this to override low DPI rendering on high DPI displays.
+      }).then((instance) => {
+        unityInstance = instance;
       });
     </script>
+
+    <!-- 👇 ADD THIS BRIDGE SCRIPT -->
+    <script>
+      const BACKEND_BASE = "https://avatardeployweb.onrender.com/"; // replace with your Render backend URL
+
+      function CallOpenAIFromPage(json) {
+        try {
+          const p = JSON.parse(json);
+          const text = p.text || '';
+          const model = p.model || '';
+          fetch(BACKEND_BASE + '/openai/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, model })
+          })
+          .then(r => r.json())
+          .then(data => {
+            const chatText = (data && data.text) ? data.text : 'No response from server.';
+            if (unityInstance) {
+              unityInstance.SendMessage('Avatar', 'WebGL_SetOpenAIResponse', chatText);
+            }
+            speakViaServer(chatText);
+          })
+          .catch(err => {
+            console.error('CallOpenAIFromPage error', err);
+            if (unityInstance) {
+              unityInstance.SendMessage('Avatar', 'WebGL_SetOpenAIResponse', 'OpenAI request error');
+            }
+          });
+        } catch (e) {
+          console.error('CallOpenAIFromPage parse error', e);
+        }
+      }
+
+      function speakViaServer(text, voice) {
+        if (!text) return;
+        if (unityInstance) {
+          unityInstance.SendMessage('Avatar', 'WebGL_TTSStarted', '');
+        }
+        fetch(BACKEND_BASE + '/openai/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voice: voice || '' })
+        })
+        .then(r => r.json())
+        .then(data => {
+          if (!data || !data.audioBase64) {
+            if (unityInstance) {
+              unityInstance.SendMessage('Avatar', 'WebGL_TTSFinished', '');
+            }
+            return;
+          }
+          const mime = data.mime || 'audio/mpeg';
+          const audioSrc = 'data:' + mime + ';base64,' + data.audioBase64;
+          const audio = new Audio(audioSrc);
+          audio.onended = () => {
+            if (unityInstance) {
+              unityInstance.SendMessage('Avatar', 'WebGL_TTSFinished', '');
+            }
+          };
+          audio.onerror = () => {
+            if (unityInstance) {
+              unityInstance.SendMessage('Avatar', 'WebGL_TTSFinished', '');
+            }
+          };
+          audio.play().catch(err => {
+            console.error('Audio play error', err);
+            if (unityInstance) {
+              unityInstance.SendMessage('Avatar', 'WebGL_TTSFinished', '');
+            }
+          });
+        })
+        .catch(err => {
+          console.error('TTS fetch error', err);
+          if (unityInstance) {
+            unityInstance.SendMessage('Avatar', 'WebGL_TTSFinished', '');
+          }
+        });
+      }
+
+      function StartRecognition() {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+          console.warn('SpeechRecognition not supported');
+          return;
+        }
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        recognition.onresult = (event) => {
+          const text = event.results[0][0].transcript;
+          if (unityInstance) {
+            unityInstance.SendMessage('Avatar', 'HandleQuery', JSON.stringify({ avatarId: 0, text }));
+          }
+        };
+
+        recognition.onerror = (event) => {
+          console.error('Speech recognition error', event.error);
+        };
+
+        recognition.start();
+      }
+
+      function Speak(text) {
+        speakViaServer(text);
+      }
+    </script>
+    <!-- 👆 END BRIDGE -->
   </body>
 </html>
